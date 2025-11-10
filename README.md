@@ -1,4 +1,5 @@
-# 3-Tier-application-backend-Database-proxy-
+# 3-Tier-application-backend-Database-proxy senior&efe
+the original files for kubernetes from https://github.com/abdelrahmanonline4/deploy-tier-application-backend-Database-proxy-/tree/Master
 3-Tier application (backend,Database,proxy)  from kubernetes to openshift
 
 3-Tier Go Web Application for OpenShift
