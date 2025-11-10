@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-deployment
+  namespace: lab16-sehs 
+  labels:
+    app: database-deployment
+spec:
+  selector:
+    matchLabels:
+      app: database
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: database
+    spec:
+      # --- THIS SECTION IS REQUIRED ---
+      # It tells the pod to REQUEST root access.
+      securityContext:
+        runAsUser: 0  # This requests to run as root (user ID 0)
+        fsGroup: 999  # This sets the group ownership for the mounted PVC
+
+      # This is your custom Service Account
+      serviceAccountName: allow-anyuid
+      # --- END OF REQUIRED SECTION ---
+
+      volumes:
+      - name: db-password
+        secret:
+          secretName: db-secret
+      - name: db-data
+        persistentVolumeClaim:
+          claimName: db-pvc
+      containers:
+      - name: database
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: db-password
+        - name: MYSQL_DATABASE
+          value: "example"
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+        - name: db-data
+          mountPath: "/var/lib/mysql"
