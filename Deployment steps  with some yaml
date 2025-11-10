@@ -1,0 +1,411 @@
+Installation
+Create the Project:
+
+Bash
+
+oc new-project lab16-sehs
+Create the Service Account: This account will be used by pods that need to run as a specific non-root user (like mysql or nginx).
+
+Bash
+
+oc create sa allow-anyuid -n lab16-sehs
+Grant SCC Permissions to the Service Account: This grants the anyuid permission only to the new Service Account.
+
+Bash
+
+oc adm policy add-scc-to-user anyuid -z allow-anyuid -n lab16-sehs
+Create the SSL Secret: (Replace path/to/tls.crt and path/to/tls.key with your actual file paths)
+
+Bash
+
+oc create secret tls proxy-ssl-secret \
+  --cert=path/to/tls.crt \
+  --key=path/to/tls.key \
+  -n lab16-sehs
+Apply All Manifests: Apply all the final YAML manifests (listed below) to the cluster.
+
+Bash
+
+# Apply them all at once
+oc apply -f . -n lab16-sehs
+Verify and Access Your Application: Wait for all pods to be in the Running state.
+
+Bash
+
+oc get pods -n lab16-sehs -w
+Find the public URL for your application by checking the Route:
+
+Bash
+
+oc get route proxy-route -n lab16-sehs
+Access the application using the HOST/PORT provided in the output.
+
+📜 Final Manifests (The "Details")
+Here are the complete, final YAML files for the entire working application.
+
+🗄️ Database Component
+db-secret.yaml
+YAML
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+  namespace: lab16-sehs
+data:
+  db-password: U3Ryb25nUEBzc3cwcmQyMDI0
+db-pvc.yaml
+YAML
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-pvc
+  namespace: lab16-sehs
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+database-deployment.yaml
+YAML
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-deployment
+  namespace: lab16-sehs
+  labels:
+    app: database-deployment
+spec:
+  selector:
+    matchLabels:
+      app: database
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: database
+    spec:
+      serviceAccountName: allow-anyuid # <--- Uses the custom SA
+      volumes:
+      - name: db-data
+        persistentVolumeClaim:
+          claimName: db-pvc
+      containers:
+      - name: database
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: db-password
+        - name: MYSQL_DATABASE
+          value: "example"
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+        - name: db-data
+          mountPath: "/var/lib/mysql"
+database-service.yaml
+YAML
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: lab16-sehs
+spec:
+  selector:
+    app: database
+  type: ClusterIP
+  ports:
+  - protocol: TCP
+    port: 3306
+    targetPort: 3306
+⚙️ Backend Component
+backend-deployment.yaml
+YAML
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  namespace: lab16-sehs
+  labels:
+    app: backend-deployment
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      volumes:
+      - name: db-password
+        secret:
+          secretName: db-secret
+      containers:
+      - name: backend
+        image: 3booda24/app-go:latest
+        imagePullPolicy: IfNotPresent # <--- The fix
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: db-password
+          mountPath: "/db-secret"
+          readOnly: true
+backend-service.yaml
+YAML
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: lab16-sehs
+spec:
+  selector:
+    app: backend
+  type: ClusterIP
+  ports:
+  - name: backendservice
+    protocol: TCP
+    port: 8000
+    targetPort: 8000
+🌐 Proxy (Frontend) Component
+proxy-configmap.yaml
+YAML
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-config
+  namespace: lab16-sehs
+data:
+  nginx.conf: |
+    server {
+      listen 8443 ssl; # <--- Listens on non-privileged port
+      server_name proxy-route-lab16-sehs.apps.your-cluster.com; # Change this
+
+      ssl_certificate /etc/nginx-ssl/tls.crt;
+      ssl_certificate_key /etc/nginx-ssl/tls.key;
+
+      location / {
+        proxy_pass http://backend:8000;
+      }
+    }
+proxy-deployment.yaml
+YAML
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-deployment
+  namespace: lab16-sehs
+  labels:
+    app: proxy-deployment
+spec:
+  selector:
+    matchLabels:
+      app: proxy
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      serviceAccountName: allow-anyuid # <--- Uses the custom SA
+      containers:
+      - name: proxy
+        image: 3booda24/nginx-proxy-go:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8443 # <--- Exposes non-privileged port
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf # Mounts the config file
+        - name: nginx-ssl
+          mountPath: /etc/nginx-ssl # Mounts the cert/key
+          readOnly: true
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: proxy-config
+      - name: nginx-ssl
+        secret:
+          secretName: proxy-ssl-secret
+proxy-service.yaml
+YAML
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: lab16-sehs
+spec:
+  selector:
+    app: proxy
+  type: ClusterIP
+  ports:
+  - name: https-proxy
+    protocol: TCP
+    port: 443         # <--- Route sends traffic here
+    targetPort: 8443  # <--- Service forwards to the pod's port
+proxy-route.yaml
+YAML
+
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: proxy-route
+  namespace: lab16-sehs
+spec:
+  to:
+    kind: Service
+    name: proxy
+  port:
+    targetPort: https-proxy # <--- Matches the Service port name
+  tls:
+    termination: edge
+📚 Appendix: Troubleshooting a passthrough Route
+This section outlines an alternative scenario: deploying the Nginx proxy when it is configured to handle its own SSL/TLS traffic (listen 443 ssl). This requires a passthrough route and presents a different set of challenges.
+
+The Core Problem: listen 443 ssl
+Initial attempts to use a standard edge route failed with an "Application is not available" error. This is because the Nginx server insists on handling the HTTPS (SSL) connection itself, but an edge route terminates SSL and sends plain HTTP, which Nginx rejects.
+
+This forces the use of a passthrough route, which leads to a new troubleshooting journey.
+
+Troubleshooting Journey
+Problem: SSL_ERROR_ZERO_RETURN
+
+Action: Created a passthrough route.
+
+Result: curl failed.
+
+Cause: The route correctly sent encrypted HTTPS traffic, but the Nginx pod had no SSL certificates (.crt and .key) to handle the connection, so it hung up.
+
+Problem: CrashLoopBackOff
+
+Action: Created an OpenShift tls Secret (nginx-ssl-secret) to hold the certificates and mounted it as a volume.
+
+Result: The new pods failed to start.
+
+Cause: Pod logs showed "No such file or directory for nginx.crt". An OpenShift tls Secret names its files tls.crt and tls.key by default, but the nginx.conf was looking for nginx.crt and nginx.key.
+
+Problem: SSL_ERROR_ZERO_RETURN (Again)
+
+Action: Fixed the CrashLoopBackOff by adding an items block to the volume in proxy-deployment.yaml to rename tls.crt -> nginx.crt.
+
+Result: The pods finally started Running, but curl still failed.
+
+Cause: The original nginx.conf was still active. Its server_name localhost; directive was causing Nginx to reject requests for the route's public URL.
+
+Final Working Solution (passthrough)
+The complete fix required mounting two separate volumes:
+
+The Secret (for the SSL certificates, with files renamed).
+
+A ConfigMap (to overwrite the broken nginx.conf with a corrected one).
+
+Step 1: Create the Secret (and Certs)
+Bash
+
+# Create self-signed certs (if needed)
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout nginx.key -out nginx.crt -subj "/CN=proxy-passthrough-route-lab16-sehs.apps-crc.testing"
+
+# Create the Secret
+oc create secret tls nginx-ssl-secret --cert=nginx.crt --key=nginx.key -n lab16-sehs
+Step 2: Create the ConfigMap
+Bash
+
+# Create the fixed config file
+cat <<EOF > fixed-nginx.conf
+events { worker_connections  1024; }
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65;
+
+    server {
+        listen 443 ssl;
+        server_name _;  # <-- The fix: accept any hostname
+
+        ssl_certificate /etc/nginx/ssl/nginx.crt;
+        ssl_certificate_key /etc/nginx/ssl/nginx.key;
+
+        location / {
+            proxy_pass http://backend:8000; # Points to the backend service
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
+}
+EOF
+
+# Create the ConfigMap
+oc create configmap nginx-config --from-file=nginx.conf=fixed-nginx.conf -n lab16-sehs
+Step 3: Create the Service and Route
+Bash
+
+# Create a Service targeting the pod's port 443
+oc expose deployment proxy-deployment --port=443 --name=proxy-svc-443 -n lab16-sehs
+
+# Create the passthrough route
+oc create route passthrough proxy-passthrough-route --service=proxy-svc-443 --port=443 -n lab16-sehs
+Step 4: Final proxy-deployment.yaml (for passthrough)
+YAML
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-deployment
+  namespace: lab16-sehs
+  labels:
+    app: proxy-deployment
+spec:
+  selector:
+    matchLabels:
+      app: proxy
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      containers:
+      - name: proxy
+        image: 3booda24/nginx-proxy-go:latest
+        ports:
+        - containerPort: 443
+        volumeMounts:
+        # 1. Mount the SSL certificates
+        - name: ssl-certs-volume
+          mountPath: /etc/nginx/ssl
+          readOnly: true
+        # 2. Mount the Nginx config
+        - name: nginx-conf-volume
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+      volumes:
+      # 1. Volume for the SSL secret (with file renaming)
+      - name: ssl-certs-volume
+        secret:
+          secretName: nginx-ssl-secret
+          items:
+          - key: tls.crt
+            path: nginx.crt
+          - key: tls.key
+            path: nginx.key
+      # 2. Volume for the Nginx ConfigMap
+      - name: nginx-conf-volume
+        configMap:
+          name: nginx-config
