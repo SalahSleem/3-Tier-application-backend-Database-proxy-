@@ -34,3 +34,7 @@ Custom Configuration: A ConfigMap was created to inject the custom nginx.conf (l
 Storage: The insecure hostPath PersistentVolume was deleted. The PersistentVolumeClaim was modified to use the cluster's default StorageClass for dynamic provisioning.
 
 Image Policy: The imagePullPolicy: Never (which caused errors) was changed to imagePullPolicy: IfNotPresent to ensure the images are pulled from the registry.
+
+The last output 
+<img width="932" height="193" alt="image" src="https://github.com/user-attachments/assets/facd42d3-3fad-4aca-8992-4631dec96823" />
+
